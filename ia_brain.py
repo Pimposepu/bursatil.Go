@@ -13,69 +13,70 @@ def ejecutar_ia_maestra(simbolo):
         
     df = pd.read_json(ruta)
     
-    # 1. Normalización total a minúsculas
+    # FORZADO ABSOLUTO: Pasamos todo a minúsculas apenas cargamos
     df.columns = [col.lower() for col in df.columns]
     
-    # Preparación para gráficos
     if 'date' in df.columns:
         df['date'] = pd.to_datetime(df['date'])
         df.set_index('date', inplace=True)
 
     # --- LÓGICA DE VOTOS ---
     voto_velas = df['voto_velas'].iloc[-1] if 'voto_velas' in df.columns else 0
-    rsi = df['rsi'].iloc[-1] if 'rsi' in df.columns else 50
+    
+    # Buscamos RSI sin que importe la mayúscula
+    col_rsi = [c for c in df.columns if c.lower() == 'rsi']
+    rsi = df[col_rsi[0]].iloc[-1] if col_rsi else 50
     voto_rsi = 1 if rsi < 45 else (-1 if rsi > 70 else 0)
     
-    # Filtro Hermano Mayor y VIX (con manejo de errores)
+    # Filtros externos
     voto_hermano = 0
     try:
-        spy = yf.download("SPY", period="5d", progress=False)['Close']
-        voto_hermano = 1 if float(spy.iloc[-1]) > float(spy.iloc[-2]) else -1
+        spy = yf.download("SPY", period="5d", progress=False)
+        # yfinance a veces devuelve MultiIndex, forzamos columna Close
+        spy_close = spy['Close'] if 'Close' in spy.columns else spy.iloc[:, 0]
+        voto_hermano = 1 if float(spy_close.iloc[-1]) > float(spy_close.iloc[-2]) else -1
     except: pass
 
-    voto_sentimiento = 0
-    try:
-        vix = yf.download("^VIX", period="1d", progress=False)['Close']
-        voto_sentimiento = 1 if float(vix.iloc[-1]) < 22 else -1
-    except: pass
+    total_puntos = voto_velas + voto_rsi + voto_hermano
+    decision = "COMPRAR" if total_puntos >= 1 else "ESPERAR"
 
-    total_puntos = voto_velas + voto_rsi + voto_hermano + voto_sentimiento
-    decision = "COMPRAR" if total_puntos >= 2 else "ESPERAR / EVITAR"
-
-    # Soporte y Resistencia
-    precio_actual = df['close'].iloc[-1]
+    # --- CORRECCIÓN LÍNEA 46 (ERROR KEYERROR CLOSE) ---
+    # Buscamos la columna que se parezca a 'close'
+    col_close = [c for c in df.columns if c.lower() == 'close']
+    if not col_close:
+        print("❌ Error crítico: No hay columna de precio de cierre")
+        return
+    
+    precio_actual = df[col_close[0]].iloc[-1]
+    
+    # Soporte y Resistencia seguros
     soporte = df['soporte'].iloc[-1] if 'soporte' in df.columns else (precio_actual * 0.95)
     resistencia = df['resistencia'].iloc[-1] if 'resistencia' in df.columns else (precio_actual * 1.05)
 
-    # --- GENERACIÓN DE GRÁFICOS ---
+    # --- GRÁFICOS ---
     if not os.path.exists('data'): os.makedirs('data')
 
-    # Gráfico 1: Velas (Mplfinance requiere nombres Capitalizados)
+    # Para mplfinance necesitamos nombres específicos Capitalizados
     df_graf = df.tail(30).copy()
-    df_graf.columns = [col.capitalize() for col in df_graf.columns]
-    
-    mc = mpf.make_marketcolors(up='green', down='red', inherit=True)
-    s = mpf.make_mpf_style(marketcolors=mc, gridstyle='--')
+    # Mapeo manual para no errar
+    mapeo = {c: c.capitalize() for c in df_graf.columns}
+    df_graf = df_graf.rename(columns=mapeo)
     
     try:
+        mc = mpf.make_marketcolors(up='green', down='red', inherit=True)
+        s = mpf.make_mpf_style(marketcolors=mc, gridstyle='--')
         mpf.plot(df_graf, type='candle', style=s, 
                  title=f"Velas - {simbolo}", 
                  hlines=dict(hlines=[soporte, resistencia], colors=['blue', 'orange'], linestyle='-.'),
                  savefig=dict(fname=f"data/velas_{simbolo}.png", dpi=100))
-    except Exception as e:
-        print(f"Error gráfico velas: {e}")
-
-    # Gráfico 2: Riesgo
-    try:
+        
         plt.figure(figsize=(10, 4))
-        plt.plot(df.index[-30:], df['close'].tail(30), label="Precio Cierre", color='black')
-        plt.axhline(y=precio_actual * 0.90, color='red', linestyle='--', label="Stop Loss (10%)")
-        plt.axhline(y=soporte, color='blue', linestyle=':', label="Soporte")
+        plt.plot(df.index[-30:], df[col_close[0]].tail(30), color='black')
+        plt.axhline(y=precio_actual * 0.90, color='red', linestyle='--', label="SL 10%")
         plt.title(f"Riesgo - {simbolo}")
-        plt.legend()
         plt.savefig(f"data/riesgo_{simbolo}.png")
         plt.close()
     except Exception as e:
-        print(f"Error gráfico riesgo: {e}")
+        print(f"Error en gráficos: {e}")
 
     print(f"✅ Análisis completo para {simbolo}")
